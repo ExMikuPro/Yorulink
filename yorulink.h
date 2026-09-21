@@ -5,20 +5,29 @@
 extern "C" {
 #endif
 
-/* Configuration. Values affecting structure layout must match in every TU. */
+/* =========================================================
+ *  User Configuration
+ * =========================================================
+ * Values that affect structure layout must be identical in every translation
+ * unit that includes this header.
+ */
+
+/* Maximum application payload carried by one frame, in bytes. */
 #ifndef YORULINK_MAX_PAYLOAD
 #define YORULINK_MAX_PAYLOAD 256u
 #endif
 
+/* Receive queue capacity; one extra byte is reserved internally. */
 #ifndef YORULINK_RX_QUEUE_SIZE
 #define YORULINK_RX_QUEUE_SIZE 512u
 #endif
 
+/* Request timeout used when YORULINK_Request receives timeout_ms = 0. */
 #ifndef YORULINK_DEFAULT_TIMEOUT_MS
 #define YORULINK_DEFAULT_TIMEOUT_MS 1000u
 #endif
 
-/* Wire Protocol V1 has one ERROR encoding: uint32 little-endian. */
+/* Wire Protocol V1 ERROR IDs are always uint32 little-endian. */
 #define YORULINK_WIRE_ERROR_SIZE 4u
 
 #if YORULINK_MAX_PAYLOAD > 65524u
@@ -37,6 +46,11 @@ extern "C" {
 #error "Yorulink Wire V1 requires 8-bit bytes"
 #endif
 
+/* =========================================================
+ *  Portable Integer Types
+ * =========================================================
+ * Compiler-provided integer types keep the core independent from stdint.h.
+ */
 typedef
 #if defined(__UINT8_TYPE__)
 __UINT8_TYPE__
@@ -97,9 +111,14 @@ typedef char yorulink__u8_size_check[(sizeof(yorulink_u8_t) == 1u) ? 1 : -1];
 typedef char yorulink__u16_size_check[(sizeof(yorulink_u16_t) == 2u) ? 1 : -1];
 typedef char yorulink__u32_size_check[(sizeof(yorulink_u32_t) == 4u) ? 1 : -1];
 
-/*
+/* =========================================================
+ *  Error Integration
+ * =========================================================
  * Override YORULINK_ERROR_TYPE and the YORULINK_ERR_* macros before including
  * this file to bind Yorulink directly to a project-wide error system.
+ *
+ * Local API and transport errors use this type. Remote operation errors are
+ * encoded as fixed-width uint32 values on the wire.
  */
 #ifndef YORULINK_ERROR_TYPE
 typedef yorulink_u32_t yorulink_error_t;
@@ -156,12 +175,22 @@ typedef char yorulink__error_type_width_check[
     (sizeof(YORULINK_ERROR_TYPE) >= sizeof(yorulink_u32_t)) ? 1 : -1
 ];
 
+/* =========================================================
+ *  Wire Protocol Constants
+ * ========================================================= */
+
+/* Current on-wire protocol version. */
 #define YORULINK_PROTOCOL_VERSION 0x01u
+
+/* Two-byte start-of-frame marker used for stream synchronization. */
 #define YORULINK_SOF0 0xAAu
 #define YORULINK_SOF1 0x55u
+
+/* Header, CRC, and framing bytes added around every payload. */
 #define YORULINK_FRAME_OVERHEAD 11u
 #define YORULINK_MAX_FRAME_SIZE (YORULINK_FRAME_OVERHEAD + YORULINK_MAX_PAYLOAD)
 
+/* Frame direction and purpose encoded in the Type field. */
 typedef enum {
     YORULINK_TYPE_REQUEST = 0x01,
     YORULINK_TYPE_RESPONSE = 0x02,
@@ -169,41 +198,53 @@ typedef enum {
     YORULINK_TYPE_ERROR = 0x04
 } YORULINK_MessageType;
 
+/* =========================================================
+ *  Type Definitions
+ * ========================================================= */
+
+/* Forward declaration used by callbacks and the public handle. */
 typedef struct YORULINK_HandleTypeDef YORULINK_HandleTypeDef;
 
+/* Decoded frame view. Data points into the handle-owned payload buffer. */
 typedef struct {
-    yorulink_u8_t Version;
-    yorulink_u8_t Type;
-    yorulink_u8_t Sequence;
-    yorulink_u8_t Command;
-    yorulink_u8_t Operation;
-    yorulink_u16_t Length;
-    const yorulink_u8_t *Data;
+    yorulink_u8_t Version;       /* Wire protocol version. */
+    yorulink_u8_t Type;          /* YORULINK_MessageType value. */
+    yorulink_u8_t Sequence;      /* Request/response correlation ID. */
+    yorulink_u8_t Command;       /* Application command group. */
+    yorulink_u8_t Operation;     /* Operation within the command group. */
+    yorulink_u16_t Length;       /* Payload length in bytes. */
+    const yorulink_u8_t *Data;   /* Handle-owned payload; valid during callback. */
 } YORULINK_MessageTypeDef;
 
+/* Handler invoked for a validated request or event command. */
 typedef void (*YORULINK_CommandHandlerTypeDef)(
     YORULINK_HandleTypeDef *hlink,
     const YORULINK_MessageTypeDef *message);
 
+/* One command-dispatch entry with an accepted payload-length range. */
 typedef struct {
-    yorulink_u8_t Command;
-    yorulink_u8_t Operation;
-    yorulink_u16_t MinLength;
-    yorulink_u16_t MaxLength;
-    YORULINK_CommandHandlerTypeDef Handler;
+    yorulink_u8_t Command;                    /* Command group to match. */
+    yorulink_u8_t Operation;                  /* Operation to match. */
+    yorulink_u16_t MinLength;                 /* Minimum accepted payload size. */
+    yorulink_u16_t MaxLength;                 /* Maximum accepted payload size. */
+    YORULINK_CommandHandlerTypeDef Handler;   /* Function called on a match. */
 } YORULINK_CommandTypeDef;
 
+/* Transport writer. Return the project error unchanged to the caller. */
 typedef YORULINK_ERROR_TYPE (*YORULINK_WriteFnTypeDef)(
     void *context, const yorulink_u8_t *data, yorulink_u16_t length);
 
+/* Monotonic millisecond tick source used by request timeouts. */
 typedef yorulink_u32_t (*YORULINK_TickFnTypeDef)(void *context);
 
+/* Completion callback for a locally initiated request. */
 typedef void (*YORULINK_ResponseHandlerTypeDef)(
     YORULINK_HandleTypeDef *hlink,
     YORULINK_ERROR_TYPE error,
     const YORULINK_MessageTypeDef *message,
     void *context);
 
+/* Bounds-checked little-endian payload reader state. */
 typedef struct YORULINK_ReaderTypeDef {
     const yorulink_u8_t *Data;
     yorulink_u16_t Length;
@@ -211,6 +252,7 @@ typedef struct YORULINK_ReaderTypeDef {
     yorulink_u8_t Error;
 } YORULINK_ReaderTypeDef;
 
+/* Bounds-checked little-endian payload writer state. */
 typedef struct YORULINK_WriterTypeDef {
     yorulink_u8_t *Data;
     yorulink_u16_t Capacity;
@@ -218,18 +260,20 @@ typedef struct YORULINK_WriterTypeDef {
     yorulink_u8_t Error;
 } YORULINK_WriterTypeDef;
 
+/* Cumulative protocol diagnostics; reset explicitly with YORULINK_ResetStats. */
 typedef struct YORULINK_StatsTypeDef {
-    yorulink_u32_t FramesReceived;
-    yorulink_u32_t CrcErrors;
-    yorulink_u32_t VersionErrors;
-    yorulink_u32_t TypeErrors;
-    yorulink_u32_t LengthErrors;
-    yorulink_u32_t SemanticErrors;
-    yorulink_u32_t RxOverflows;
-    yorulink_u32_t UnmatchedResponses;
-    yorulink_u32_t RequestTimeouts;
+    yorulink_u32_t FramesReceived;       /* Valid frames accepted. */
+    yorulink_u32_t CrcErrors;            /* Frames rejected by CRC. */
+    yorulink_u32_t VersionErrors;        /* Unsupported protocol versions. */
+    yorulink_u32_t TypeErrors;           /* Invalid frame types. */
+    yorulink_u32_t LengthErrors;         /* Oversized or invalid lengths. */
+    yorulink_u32_t SemanticErrors;       /* Valid frames with invalid meaning. */
+    yorulink_u32_t RxOverflows;          /* Bytes rejected by the RX queue. */
+    yorulink_u32_t UnmatchedResponses;   /* Responses without a pending request. */
+    yorulink_u32_t RequestTimeouts;      /* Locally initiated requests timed out. */
 } YORULINK_StatsTypeDef;
 
+/* Internal byte-stream parser states, exposed only as part of the handle ABI. */
 typedef enum {
     YORULINK_PARSE_WAIT_SOF0 = 0,
     YORULINK_PARSE_WAIT_SOF1,
@@ -245,7 +289,14 @@ typedef enum {
     YORULINK_PARSE_CRC_HIGH
 } YORULINK_ParserStateTypeDef;
 
+/*
+ * Complete link state for one independent Yorulink connection.
+ *
+ * Storage is caller-owned and contains all RX, parser, TX, request, and
+ * diagnostic state. No dynamic allocation is performed by the library.
+ */
 struct YORULINK_HandleTypeDef {
+    /* Application dispatch and platform hooks. */
     const YORULINK_CommandTypeDef *CommandTable;
     yorulink_u16_t CommandCount;
     YORULINK_WriteFnTypeDef Write;
@@ -253,11 +304,13 @@ struct YORULINK_HandleTypeDef {
     YORULINK_TickFnTypeDef Tick;
     void *TickContext;
 
+    /* Single-producer/single-consumer receive queue. */
     yorulink_u8_t RxQueue[YORULINK_RX_QUEUE_SIZE + 1u];
     volatile yorulink_size_t RxHead;
     volatile yorulink_size_t RxTail;
     volatile yorulink_u8_t ParserNeedsResync;
 
+    /* In-progress frame parser and decoded payload storage. */
     YORULINK_ParserStateTypeDef ParserState;
     YORULINK_MessageTypeDef ParsedMessage;
     yorulink_u8_t Payload[YORULINK_MAX_PAYLOAD > 0u ? YORULINK_MAX_PAYLOAD : 1u];
@@ -265,8 +318,11 @@ struct YORULINK_HandleTypeDef {
     yorulink_u16_t CalculatedCrc;
     yorulink_u16_t ReceivedCrc;
 
+    /* Reusable transmit frame and sequence generator. */
     yorulink_u8_t TxBuffer[YORULINK_MAX_FRAME_SIZE];
     yorulink_u8_t NextSequence;
+
+    /* One outstanding request is supported per handle. */
     yorulink_u8_t PendingActive;
     yorulink_u8_t PendingSequence;
     yorulink_u8_t PendingCommand;
@@ -276,19 +332,38 @@ struct YORULINK_HandleTypeDef {
     YORULINK_ResponseHandlerTypeDef PendingCallback;
     void *PendingContext;
 
+    /* Protocol health counters. */
     YORULINK_StatsTypeDef Stats;
 };
 
-yorulink_u16_t YORULINK_Crc16(const yorulink_u8_t *data, yorulink_u16_t length);
+/* =========================================================
+ *  Core API
+ * ========================================================= */
+
+/* Calculate the Wire V1 CRC-16/CCITT-FALSE value for a byte range. */
+yorulink_u16_t YORULINK_Crc16(const yorulink_u8_t *data,
+                              yorulink_u16_t length);
+
+/* Initialize one handle and bind its immutable command table. */
 YORULINK_ERROR_TYPE YORULINK_Init(YORULINK_HandleTypeDef *hlink,
                                   const YORULINK_CommandTypeDef *table,
                                   yorulink_u16_t count);
+
+/* Bind the transport writer and its opaque application context. */
 void YORULINK_SetWrite(YORULINK_HandleTypeDef *hlink, YORULINK_WriteFnTypeDef fn, void *context);
+
+/* Bind the monotonic millisecond tick source used by request timeouts. */
 void YORULINK_SetTick(YORULINK_HandleTypeDef *hlink, YORULINK_TickFnTypeDef fn, void *context);
+
+/* Queue received transport bytes; returns the number of bytes accepted. */
 yorulink_size_t YORULINK_Input(YORULINK_HandleTypeDef *hlink,
                                const yorulink_u8_t *data,
                                yorulink_size_t length);
+
+/* Parse queued bytes, dispatch complete frames, and service request timeouts. */
 void YORULINK_Process(YORULINK_HandleTypeDef *hlink);
+
+/* Build and write one frame using an explicit type and sequence number. */
 YORULINK_ERROR_TYPE YORULINK_Send(YORULINK_HandleTypeDef *hlink,
                                   yorulink_u8_t type,
                                   yorulink_u8_t sequence,
@@ -296,20 +371,30 @@ YORULINK_ERROR_TYPE YORULINK_Send(YORULINK_HandleTypeDef *hlink,
                                   yorulink_u8_t operation,
                                   const yorulink_u8_t *payload,
                                   yorulink_u16_t length);
+
+/* Send an unsolicited event with the next local sequence number. */
 YORULINK_ERROR_TYPE YORULINK_SendEvent(YORULINK_HandleTypeDef *hlink,
                                        yorulink_u8_t command,
                                        yorulink_u8_t operation,
                                        const yorulink_u8_t *payload,
                                        yorulink_u16_t length);
+
+/* Send a successful response correlated to a received request. */
 YORULINK_ERROR_TYPE YORULINK_Reply(YORULINK_HandleTypeDef *hlink,
                                    const YORULINK_MessageTypeDef *request,
                                    const yorulink_u8_t *payload,
                                    yorulink_u16_t length);
+
+/* Send a fixed-width Wire V1 ERROR response for a received request. */
 YORULINK_ERROR_TYPE YORULINK_ReplyError(YORULINK_HandleTypeDef *hlink,
                                         const YORULINK_MessageTypeDef *request,
                                         YORULINK_ERROR_TYPE error);
+
+/* Decode the uint32 little-endian error ID from an ERROR frame. */
 YORULINK_ERROR_TYPE YORULINK_GetRemoteError(const YORULINK_MessageTypeDef *message,
                                             YORULINK_ERROR_TYPE *error);
+
+/* Start one asynchronous request; completion is delivered through callback. */
 YORULINK_ERROR_TYPE YORULINK_Request(YORULINK_HandleTypeDef *hlink,
                                      yorulink_u8_t command,
                                      yorulink_u8_t operation,
@@ -319,9 +404,19 @@ YORULINK_ERROR_TYPE YORULINK_Request(YORULINK_HandleTypeDef *hlink,
                                      YORULINK_ResponseHandlerTypeDef callback,
                                      void *context);
 
+/* =========================================================
+ *  Payload Reader API
+ * =========================================================
+ * All multi-byte values use little-endian wire order. Read functions return
+ * 1 on success and 0 on failure; a failure remains latched in reader->Error.
+ */
+
+/* Initialize a reader over an immutable payload byte range. */
 void YORULINK_ReaderInit(YORULINK_ReaderTypeDef *reader,
                          const yorulink_u8_t *data,
                          yorulink_u16_t length);
+
+/* Read scalar values or a byte range while enforcing payload bounds. */
 yorulink_u8_t YORULINK_ReadU8(YORULINK_ReaderTypeDef *reader, yorulink_u8_t *value);
 yorulink_u8_t YORULINK_ReadI8(YORULINK_ReaderTypeDef *reader, yorulink_i8_t *value);
 yorulink_u8_t YORULINK_ReadU16(YORULINK_ReaderTypeDef *reader, yorulink_u16_t *value);
@@ -331,12 +426,24 @@ yorulink_u8_t YORULINK_ReadI32(YORULINK_ReaderTypeDef *reader, yorulink_i32_t *v
 yorulink_u8_t YORULINK_ReadBytes(YORULINK_ReaderTypeDef *reader,
                                  yorulink_u8_t *value,
                                  yorulink_u16_t length);
+
+/* Inspect unread bytes and the reader's latched error state. */
 yorulink_u16_t YORULINK_ReaderRemaining(const YORULINK_ReaderTypeDef *reader);
 yorulink_u8_t YORULINK_ReaderError(const YORULINK_ReaderTypeDef *reader);
 
+/* =========================================================
+ *  Payload Writer API
+ * =========================================================
+ * All multi-byte values use little-endian wire order. Write functions return
+ * 1 on success and 0 on failure; a failure remains latched in writer->Error.
+ */
+
+/* Initialize a writer over a caller-owned payload buffer. */
 void YORULINK_WriterInit(YORULINK_WriterTypeDef *writer,
                          yorulink_u8_t *data,
                          yorulink_u16_t capacity);
+
+/* Write scalar values or a byte range while enforcing buffer bounds. */
 yorulink_u8_t YORULINK_WriteU8(YORULINK_WriterTypeDef *writer, yorulink_u8_t value);
 yorulink_u8_t YORULINK_WriteI8(YORULINK_WriterTypeDef *writer, yorulink_i8_t value);
 yorulink_u8_t YORULINK_WriteU16(YORULINK_WriterTypeDef *writer, yorulink_u16_t value);
@@ -346,11 +453,20 @@ yorulink_u8_t YORULINK_WriteI32(YORULINK_WriterTypeDef *writer, yorulink_i32_t v
 yorulink_u8_t YORULINK_WriteBytes(YORULINK_WriterTypeDef *writer,
                                   const yorulink_u8_t *value,
                                   yorulink_u16_t length);
+
+/* Inspect bytes written, remaining capacity, and the latched error state. */
 yorulink_u16_t YORULINK_WriterLength(const YORULINK_WriterTypeDef *writer);
 yorulink_u16_t YORULINK_WriterRemaining(const YORULINK_WriterTypeDef *writer);
 yorulink_u8_t YORULINK_WriterError(const YORULINK_WriterTypeDef *writer);
 
+/* =========================================================
+ *  Diagnostics API
+ * ========================================================= */
+
+/* Return the handle-owned statistics block, or null for an invalid handle. */
 const YORULINK_StatsTypeDef *YORULINK_GetStats(const YORULINK_HandleTypeDef *hlink);
+
+/* Clear protocol diagnostics without changing connection state. */
 void YORULINK_ResetStats(YORULINK_HandleTypeDef *hlink);
 
 #ifdef __cplusplus
@@ -363,6 +479,11 @@ void YORULINK_ResetStats(YORULINK_HandleTypeDef *hlink);
 #ifndef YORULINK_IMPLEMENTATION_ONCE
 #define YORULINK_IMPLEMENTATION_ONCE
 
+/* =========================================================
+ *  Internal Byte and CRC Helpers
+ * ========================================================= */
+
+/* Small dependency-free copy helper used for payload and frame storage. */
 static void yorulink__copy_(yorulink_u8_t *dst,
                             const yorulink_u8_t *src,
                             yorulink_size_t length)
@@ -398,6 +519,11 @@ yorulink_u16_t YORULINK_Crc16(const yorulink_u8_t *data, yorulink_u16_t length)
     return crc;
 }
 
+/* =========================================================
+ *  Parser and Handle State
+ * ========================================================= */
+
+/* Reset only the in-progress parser; queued bytes and diagnostics are kept. */
 static void yorulink__parser_reset_(YORULINK_HandleTypeDef *hlink)
 {
     hlink->ParserState = YORULINK_PARSE_WAIT_SOF0;
@@ -438,6 +564,7 @@ const YORULINK_StatsTypeDef *YORULINK_GetStats(const YORULINK_HandleTypeDef *hli
                : &hlink->Stats;
 }
 
+/* Validate the entire dispatch table before making the handle usable. */
 YORULINK_ERROR_TYPE YORULINK_Init(YORULINK_HandleTypeDef *hlink,
                                   const YORULINK_CommandTypeDef *table,
                                   yorulink_u16_t count)
@@ -508,6 +635,14 @@ void YORULINK_SetTick(YORULINK_HandleTypeDef *hlink, YORULINK_TickFnTypeDef fn, 
     }
 }
 
+/* =========================================================
+ *  Frame Transmission
+ * ========================================================= */
+
+/*
+ * Serialize the complete frame into the handle-owned TX buffer. The transport
+ * callback must consume or copy the buffer before returning.
+ */
 YORULINK_ERROR_TYPE YORULINK_Send(YORULINK_HandleTypeDef *hlink,
                                   yorulink_u8_t type,
                                   yorulink_u8_t sequence,
@@ -616,6 +751,14 @@ YORULINK_ERROR_TYPE YORULINK_GetRemoteError(const YORULINK_MessageTypeDef *messa
     return YORULINK_ERR_OK;
 }
 
+/* =========================================================
+ *  Receive Queue, Parser, and Dispatch
+ * ========================================================= */
+
+/*
+ * Producer side of the RX queue. The extra array byte distinguishes a full
+ * ring from an empty ring without an additional shared counter.
+ */
 yorulink_size_t YORULINK_Input(YORULINK_HandleTypeDef *hlink,
                                const yorulink_u8_t *data,
                                yorulink_size_t length)
@@ -648,6 +791,7 @@ yorulink_size_t YORULINK_Input(YORULINK_HandleTypeDef *hlink,
     return accepted;
 }
 
+/* Route responses to the pending callback and requests/events to handlers. */
 static void yorulink__dispatch_(YORULINK_HandleTypeDef *hlink)
 {
     const YORULINK_CommandTypeDef *entry = (const YORULINK_CommandTypeDef *)0;
@@ -658,6 +802,7 @@ static void yorulink__dispatch_(YORULINK_HandleTypeDef *hlink)
     yorulink_u8_t command_exists = 0u;
     YORULINK_MessageTypeDef *message = &hlink->ParsedMessage;
 
+    /* Reject combinations that are structurally valid but semantically invalid. */
     if ((message->Type == YORULINK_TYPE_REQUEST && message->Sequence == 0u) ||
         (message->Type == YORULINK_TYPE_EVENT && message->Sequence != 0u) ||
         ((message->Type == YORULINK_TYPE_RESPONSE || message->Type == YORULINK_TYPE_ERROR) &&
@@ -668,6 +813,7 @@ static void yorulink__dispatch_(YORULINK_HandleTypeDef *hlink)
         return;
     }
 
+    /* A response completes only the exact outstanding request tuple. */
     if (message->Type == YORULINK_TYPE_RESPONSE || message->Type == YORULINK_TYPE_ERROR) {
         if (hlink->PendingActive != 0u &&
             message->Sequence == hlink->PendingSequence &&
@@ -703,6 +849,7 @@ static void yorulink__dispatch_(YORULINK_HandleTypeDef *hlink)
         }
     }
 
+    /* Events are best-effort and never generate automatic error replies. */
     if (message->Type == YORULINK_TYPE_EVENT) {
         if (entry != (const YORULINK_CommandTypeDef *)0 &&
             message->Length >= entry->MinLength && message->Length <= entry->MaxLength) {
@@ -723,6 +870,7 @@ static void yorulink__dispatch_(YORULINK_HandleTypeDef *hlink)
     }
 }
 
+/* Consume one stream byte and advance the deterministic frame parser. */
 static void yorulink__parse_byte_(YORULINK_HandleTypeDef *hlink, yorulink_u8_t value)
 {
     switch (hlink->ParserState) {
@@ -820,6 +968,7 @@ static void yorulink__parse_byte_(YORULINK_HandleTypeDef *hlink, yorulink_u8_t v
     }
 }
 
+/* Consumer side of the RX queue plus asynchronous request timeout service. */
 void YORULINK_Process(YORULINK_HandleTypeDef *hlink)
 {
     yorulink_size_t head;
@@ -859,6 +1008,10 @@ void YORULINK_Process(YORULINK_HandleTypeDef *hlink)
         }
     }
 }
+
+/* =========================================================
+ *  Asynchronous Request State
+ * ========================================================= */
 
 YORULINK_ERROR_TYPE YORULINK_Request(YORULINK_HandleTypeDef *hlink,
                                      yorulink_u8_t command,
@@ -903,6 +1056,13 @@ YORULINK_ERROR_TYPE YORULINK_Request(YORULINK_HandleTypeDef *hlink,
     }
     return status;
 }
+
+/* =========================================================
+ *  Bounds-Checked Payload Codecs
+ * =========================================================
+ * Reader and writer errors are sticky so callers may perform a sequence of
+ * operations and check the aggregate result once at the end.
+ */
 
 static yorulink_u8_t yorulink__reader_can_(const YORULINK_ReaderTypeDef *reader,
                                            yorulink_u16_t length)
@@ -1042,6 +1202,7 @@ yorulink_u8_t YORULINK_ReaderError(const YORULINK_ReaderTypeDef *reader)
     return (yorulink_u8_t)(reader == (const YORULINK_ReaderTypeDef *)0 || reader->Error != 0u);
 }
 
+/* Writer functions mirror the reader and always encode little-endian values. */
 void YORULINK_WriterInit(YORULINK_WriterTypeDef *writer,
                          yorulink_u8_t *data,
                          yorulink_u16_t capacity)

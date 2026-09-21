@@ -85,7 +85,6 @@ Yorulink 不要求调用者维护第二套错误枚举。在包含头文件前�
 #define YORULINK_ERR_BUSY              YORU_ERR_BUSY
 #define YORULINK_ERR_TIMEOUT           YORU_ERR_TIMEOUT
 #define YORULINK_ERR_BUFFER_FULL       YORU_ERR_RX_OVERFLOW
-#define YORULINK_ERR_TRANSPORT         YORU_ERR_TRANSPORT
 #define YORULINK_ERR_UNKNOWN_COMMAND   YORU_ERR_UNKNOWN_COMMAND
 #define YORULINK_ERR_UNKNOWN_OPERATION YORU_ERR_UNKNOWN_OPERATION
 #define YORULINK_ERR_BAD_LENGTH        YORU_ERR_BAD_LENGTH
@@ -100,16 +99,22 @@ Yorulink 不要求调用者维护第二套错误枚举。在包含头文件前�
 - Local Protocol Diagnostic：CRC、版本、RX overflow 等只记录 Stats。
 - Remote Operation Error：统一业务错误 ID 原样通过 ERROR 帧传输。
 
-## ERROR Wire 宽度
+Write callback 返回的错误码会由 `YORULINK_Send()` 及相关 API 原样向上传递，
+不会被压缩成 Yorulink 自己的通用 Transport Error。
 
-ERROR Payload 以 Little Endian 统一错误 ID 开头，默认宽度为 32-bit：
+## ERROR Wire 格式
 
-```c
-#define YORULINK_WIRE_ERROR_BITS 32u
+Wire Protocol V1 只有一种 ERROR 布局。每个 ERROR Payload 都以固定的
+Little Endian `uint32` 统一错误 ID 开头：
+
+```text
+Offset  Size  Field
+0       4     unified_error_id, uint32 little-endian
+4       N     可选不透明 Detail（预留扩展）
 ```
 
-错误空间确定不超过 16-bit 时可显式设为 `16u`。两端固件和所有 Translation
-Unit 必须使用相同值；协议不会在运行时协商。
+`YORULINK_ERROR_TYPE` 必须至少能容纳 32 bit；更小的项目错误类型会在编译期
+报错。V0.1 只发送前四字节 Error ID。
 
 ## 配置
 
@@ -118,7 +123,6 @@ Unit 必须使用相同值；协议不会在运行时协商。
 | `YORULINK_MAX_PAYLOAD` | `256` | 本地最大 Payload 字节数 |
 | `YORULINK_RX_QUEUE_SIZE` | `512` | RX 队列容量 |
 | `YORULINK_DEFAULT_TIMEOUT_MS` | `1000` | Request 传入 0 时使用的 timeout |
-| `YORULINK_WIRE_ERROR_BITS` | `32` | Wire 错误码宽度：16 或 32 |
 | `YORULINK_ERROR_TYPE` | `yorulink_error_t` | Public API 错误类型 |
 | `YORULINK_ERR_*` | 独立默认值 | 项目统一错误语义映射 |
 

@@ -98,7 +98,6 @@ directly to the project's existing error system before including the header:
 #define YORULINK_ERR_BUSY              YORU_ERR_BUSY
 #define YORULINK_ERR_TIMEOUT           YORU_ERR_TIMEOUT
 #define YORULINK_ERR_BUFFER_FULL       YORU_ERR_RX_OVERFLOW
-#define YORULINK_ERR_TRANSPORT         YORU_ERR_TRANSPORT
 #define YORULINK_ERR_UNKNOWN_COMMAND   YORU_ERR_UNKNOWN_COMMAND
 #define YORULINK_ERR_UNKNOWN_OPERATION YORU_ERR_UNKNOWN_OPERATION
 #define YORULINK_ERR_BAD_LENGTH        YORU_ERR_BAD_LENGTH
@@ -111,18 +110,23 @@ Without overrides, a standalone unsigned 32-bit error type and values are provid
 Local API failures are returned immediately, parser diagnostics stay in Stats,
 and remote business errors travel unchanged in an ERROR frame.
 
-## ERROR Wire Width
+The write callback's return value is propagated unchanged through
+`YORULINK_Send()` and related APIs, so driver-specific errors are not collapsed
+into a Yorulink-owned transport error.
 
-ERROR payloads begin with a little-endian unified error ID. The default is
-32-bit:
+## ERROR Wire Format
 
-```c
-#define YORULINK_WIRE_ERROR_BITS 32u
+Wire Protocol V1 has one ERROR layout. Every ERROR payload begins with a fixed
+unsigned 32-bit unified error ID in little-endian order:
+
+```text
+Offset  Size  Field
+0       4     unified_error_id, uint32 little-endian
+4       N     optional opaque detail (reserved for future use)
 ```
 
-Set it to `16u` only when the project error space is guaranteed to fit. Both
-peers and every translation unit must use the same value. This setting is not
-negotiated at runtime.
+`YORULINK_ERROR_TYPE` must be at least 32 bits; smaller project error types fail
+at compile time. V0.1 sends only the four-byte Error ID.
 
 ## Configuration
 
@@ -134,7 +138,6 @@ compiler definitions.
 | `YORULINK_MAX_PAYLOAD` | `256` | Maximum local payload bytes |
 | `YORULINK_RX_QUEUE_SIZE` | `512` | RX queue capacity in bytes |
 | `YORULINK_DEFAULT_TIMEOUT_MS` | `1000` | Timeout used when Request passes zero |
-| `YORULINK_WIRE_ERROR_BITS` | `32` | Unified wire error width: 16 or 32 |
 | `YORULINK_ERROR_TYPE` | `yorulink_error_t` | Project-wide public error type |
 | `YORULINK_ERR_*` | standalone defaults | Project error semantic mappings |
 

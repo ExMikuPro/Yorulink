@@ -18,9 +18,8 @@ extern "C" {
 #define YORULINK_DEFAULT_TIMEOUT_MS 1000u
 #endif
 
-#ifndef YORULINK_WIRE_ERROR_BITS
-#define YORULINK_WIRE_ERROR_BITS 32u
-#endif
+/* Wire Protocol V1 has one ERROR encoding: uint32 little-endian. */
+#define YORULINK_WIRE_ERROR_SIZE 4u
 
 #if YORULINK_MAX_PAYLOAD > 65524u
 #error "YORULINK_MAX_PAYLOAD must leave room for the 11-byte frame overhead"
@@ -30,8 +29,8 @@ extern "C" {
 #error "YORULINK_RX_QUEUE_SIZE must be at least 1"
 #endif
 
-#if (YORULINK_WIRE_ERROR_BITS != 16u) && (YORULINK_WIRE_ERROR_BITS != 32u)
-#error "YORULINK_WIRE_ERROR_BITS must be 16 or 32"
+#if YORULINK_MAX_PAYLOAD < YORULINK_WIRE_ERROR_SIZE
+#error "YORULINK_MAX_PAYLOAD must fit the 4-byte Wire V1 error ID"
 #endif
 
 #if defined(__CHAR_BIT__) && (__CHAR_BIT__ != 8)
@@ -131,9 +130,6 @@ typedef yorulink_u32_t yorulink_error_t;
 #ifndef YORULINK_ERR_BUSY
 #define YORULINK_ERR_BUSY ((YORULINK_ERROR_TYPE)7)
 #endif
-#ifndef YORULINK_ERR_TRANSPORT
-#define YORULINK_ERR_TRANSPORT ((YORULINK_ERROR_TYPE)8)
-#endif
 #ifndef YORULINK_ERR_TIMEOUT
 #define YORULINK_ERR_TIMEOUT ((YORULINK_ERROR_TYPE)9)
 #endif
@@ -156,9 +152,8 @@ typedef yorulink_u32_t yorulink_error_t;
 #define YORULINK_ERR_INTERNAL ((YORULINK_ERROR_TYPE)15)
 #endif
 
-#define YORULINK_WIRE_ERROR_SIZE (YORULINK_WIRE_ERROR_BITS / 8u)
 typedef char yorulink__error_type_width_check[
-    (sizeof(YORULINK_ERROR_TYPE) * 8u >= YORULINK_WIRE_ERROR_BITS) ? 1 : -1
+    (sizeof(YORULINK_ERROR_TYPE) >= sizeof(yorulink_u32_t)) ? 1 : -1
 ];
 
 #define YORULINK_PROTOCOL_VERSION 0x01u
@@ -411,6 +406,16 @@ static void yorulink__parser_reset_(YORULINK_HandleTypeDef *hlink)
     hlink->ReceivedCrc = 0u;
 }
 
+/* Reuse an error-ending 0xAA as the possible SOF0 of the next frame. */
+static void yorulink__parser_resync_(YORULINK_HandleTypeDef *hlink,
+                                     yorulink_u8_t current_byte)
+{
+    yorulink__parser_reset_(hlink);
+    if (current_byte == YORULINK_SOF0) {
+        hlink->ParserState = YORULINK_PARSE_WAIT_SOF1;
+    }
+}
+
 void YORULINK_ResetStats(YORULINK_HandleTypeDef *hlink)
 {
     if (hlink != (YORULINK_HandleTypeDef *)0) {
@@ -547,9 +552,7 @@ YORULINK_ERROR_TYPE YORULINK_Send(YORULINK_HandleTypeDef *hlink,
     hlink->TxBuffer[9u + length] = (yorulink_u8_t)(crc & 0xFFu);
     hlink->TxBuffer[10u + length] = (yorulink_u8_t)(crc >> 8u);
     frame_length = (yorulink_u16_t)(YORULINK_FRAME_OVERHEAD + length);
-    return hlink->Write(hlink->WriteContext, hlink->TxBuffer, frame_length) == YORULINK_ERR_OK
-               ? YORULINK_ERR_OK
-               : YORULINK_ERR_TRANSPORT;
+    return hlink->Write(hlink->WriteContext, hlink->TxBuffer, frame_length);
 }
 
 YORULINK_ERROR_TYPE YORULINK_SendEvent(YORULINK_HandleTypeDef *hlink,
@@ -739,7 +742,7 @@ static void yorulink__parse_byte_(YORULINK_HandleTypeDef *hlink, yorulink_u8_t v
     case YORULINK_PARSE_VERSION:
         if (value != YORULINK_PROTOCOL_VERSION) {
             ++hlink->Stats.VersionErrors;
-            yorulink__parser_reset_(hlink);
+            yorulink__parser_resync_(hlink, value);
         } else {
             hlink->ParsedMessage.Version = value;
             hlink->CalculatedCrc = yorulink__crc_byte_(hlink->CalculatedCrc, value);
@@ -749,7 +752,7 @@ static void yorulink__parse_byte_(YORULINK_HandleTypeDef *hlink, yorulink_u8_t v
     case YORULINK_PARSE_TYPE:
         if (value < YORULINK_TYPE_REQUEST || value > YORULINK_TYPE_ERROR) {
             ++hlink->Stats.TypeErrors;
-            yorulink__parser_reset_(hlink);
+            yorulink__parser_resync_(hlink, value);
         } else {
             hlink->ParsedMessage.Type = value;
             hlink->CalculatedCrc = yorulink__crc_byte_(hlink->CalculatedCrc, value);
@@ -782,7 +785,7 @@ static void yorulink__parse_byte_(YORULINK_HandleTypeDef *hlink, yorulink_u8_t v
         hlink->PayloadOffset = 0u;
         if (hlink->ParsedMessage.Length > YORULINK_MAX_PAYLOAD) {
             ++hlink->Stats.LengthErrors;
-            yorulink__parser_reset_(hlink);
+            yorulink__parser_resync_(hlink, value);
         } else {
             hlink->ParserState = hlink->ParsedMessage.Length == 0u
                                      ? YORULINK_PARSE_CRC_LOW
@@ -805,10 +808,11 @@ static void yorulink__parse_byte_(YORULINK_HandleTypeDef *hlink, yorulink_u8_t v
         if (hlink->ReceivedCrc == hlink->CalculatedCrc) {
             ++hlink->Stats.FramesReceived;
             yorulink__dispatch_(hlink);
+            yorulink__parser_reset_(hlink);
         } else {
             ++hlink->Stats.CrcErrors;
+            yorulink__parser_resync_(hlink, value);
         }
-        yorulink__parser_reset_(hlink);
         break;
     default:
         yorulink__parser_reset_(hlink);

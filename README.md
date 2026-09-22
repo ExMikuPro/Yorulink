@@ -40,6 +40,71 @@ reliable or semi-reliable byte streams where predictable memory usage matters.
 - Project-wide unified error code integration
 - Host tests, ASan/UBSan support, and a parser fuzz target
 
+## 🌙 Platform Support
+
+The table below records actual validation status, not the full portability
+boundary of Yorulink. Platforms not listed here may still be usable by
+implementing the Transport / Port contract; Core has no device whitelist.
+The design favors modern toolchains and keeps hardware differences outside
+the architecture-portable Core.
+
+| Status | Meaning |
+|---|---|
+| 🌱 Planned | Planned for validation |
+| 🧩 Porting | Port or validation in progress |
+| 🔧 Build Verified | Cross-compiled and linked; no hardware result implied |
+| 🧪 Hardware Validated | Basic functions verified on real hardware |
+| 🔥 Stress Validated | Hardware stress validation passed |
+| 🌟 Reference Target | Primary reference or regression target |
+
+### Validated targets
+
+| Platform | Vendor | Architecture | Transport | Profile (payload / RX queue) | Status |
+|---|---|---|---|---|---|
+| STM32H743XIH6 | ST | Cortex-M7 | USB CDC | 256 B / 512 B | 🔥 Stress Validated |
+| STM32G031G8U6 | ST | Cortex-M0+ | USART1 / CH340N | 64 B / 128 B | 🌟 Reference Target · 🔥 Stress Validated |
+| PY32F002AF15P6TU | Puya | Cortex-M0+ | USART1 / CH340N | 64 B / 128 B | 🔥 Stress Validated |
+| MSPM0G3507 | Texas Instruments | Cortex-M0+ | UART0 / XDS110 Backchannel UART | 64 B / 128 B | 🔥 Stress Validated |
+
+### 🌱 Planned validation targets
+
+| Platform | Architecture | Intended validation |
+|---|---|---|
+| STM32F070 | Cortex-M0 | Small-resource STM32 target |
+| STM32F072 | Cortex-M0 | Cortex-M0 / USB-UART validation |
+| STM32F407 | Cortex-M4F | DMA / performance validation |
+| STC89C52RC | 8051 | Planned legacy-architecture validation with a suitable modern toolchain |
+| IA-16 / 8086 | x86-16 | Planned legacy-architecture portability validation |
+
+Yorulink targets modern embedded C toolchains. Older CPU architectures may
+be ported when a suitable modern toolchain exists; compatibility with legacy
+proprietary compiler dialects is not a design goal.
+
+### Hardware validation highlights
+
+| Target | Core / clock | Profile | Handle | Transport | Clean stress |
+|---|---|---|---:|---|---:|
+| STM32H743XIH6 | Cortex-M7 / 64 MHz | 256 / 512 | 1,152 B | USB CDC | 100k PASS |
+| STM32G031G8U6 | Cortex-M0+ / 64 MHz | 64 / 128 | 384 B | 115200 UART | 100k PASS |
+| PY32F002AF15P6TU | Cortex-M0+ / 24 MHz | 64 / 128 | 384 B | 115200 UART | 100k PASS |
+| MSPM0G3507 | Cortex-M0+ / 32 MHz | 64 / 128 | 384 B | 115200 UART | 100k PASS |
+
+Each `100k PASS` entry represents 100,000 completed real hardware transactions
+with zero unexpected protocol errors in that clean stress run. Functional,
+parser-recovery, and post-reset checks also passed on each target. The same
+Wire Protocol V1 was validated across ST, Puya, and Texas Instruments; each
+project used an unmodified Yorulink Core copy. The H743 validation used a
+different header revision from the other three targets.
+
+### Validation philosophy
+
+Build verification establishes toolchain compatibility; hardware validation
+checks behavior on a board; stress validation records one completed run under
+its stated transport and configuration. These results do not certify other
+devices or operating conditions. Observed transaction rates depend on the
+transport, baud rate, host scheduling, clock, and SDK, so they are integration
+results rather than portable Core benchmarks.
+
 ## Quick Start
 
 Porting Yorulink does **not** require editing `yorulink.h`. Provide one TX
@@ -80,6 +145,10 @@ TX: handler / Request / Event → Yorulink → Write callback → transport
 
 The transport only moves bytes; it need not inspect a Yorulink frame. Yorulink
 does not know whether those bytes came from UART, USB, SPI, or TCP.
+Core owns the protocol, parser, CRC, transactions, and Reader/Writer helpers.
+The application / Port owns UART, USB, SPI, or TCP integration, the tick source,
+DMA buffer lifetime, and platform SDK calls. New hardware support should
+normally be implemented outside Core.
 The code blocks below are application-file fragments: put executable statements
 inside your initialization, callback, or main-loop functions as appropriate.
 
@@ -481,22 +550,27 @@ callback's frame pointer expires when the callback returns.
 
 ## Resource Footprint
 
-One measured STM32H743 Cortex-M7 Release (`-Os`) build with
-`YORULINK_MAX_PAYLOAD=256` and `YORULINK_RX_QUEUE_SIZE=512` linked about
-**2.2 KiB of Yorulink core code** and allocated **1,152 B** for one
-`YORULINK_HandleTypeDef`. These are measurements of that build, not fixed
-requirements: compiler, optimization, configuration, and which APIs are linked
-change the result. The separate USB CDC TX queue (2,160 B in that test app)
-is **not** part of Yorulink Core. No dynamic allocation is used.
+Release measurements from the validation applications:
 
-## Validated Hardware
+| Target | Profile | `sizeof(YORULINK_HandleTypeDef)` | Approx. linked Core text | Full validation app Flash delta | Full app RAM delta |
+|---|---|---:|---:|---:|---:|
+| STM32H743XIH6 | 256 / 512 | 1,152 B | Not measured in report | Not measured | Not measured |
+| STM32G031G8U6 | 64 / 128 | 384 B | ~2,102 B | 2,952 B | 464 B |
+| PY32F002AF15P6TU | 64 / 128 | 384 B | ~2,014 B | 2,884 B | 320 B |
+| MSPM0G3507 | 64 / 128 | 384 B | ~4,164 B | 6,872 B | 320 B |
 
-The integration was exercised on an **STM32H743 / Cortex-M7** using a USB CDC
-transport. A 100,000-Request/Response hardware stress run completed with zero
-unexpected ERROR frames, timeouts, host CRC mismatches, or payload mismatches.
-Reset, USB re-enumeration, and post-reset PING/ECHO also passed. A subsequent
-RGB GPIO command cycle was verified on the board. This is a validation record,
-not a claim of hardware testing on every STM32 or every transport.
+Core text figures are symbol-based linked estimates, not directly comparable
+across targets unless compiler flags, LTO, section GC, SDK integration, and
+symbol attribution are identical. “Full validation app delta” includes test
+commands, callbacks, and integration code; it is not Yorulink Core size. The
+H743 report gives final Release app Flash (`text+data`) of 22,500 B and static
+RAM (`data+bss`) of 12,312 B, but no matching baseline delta. Its separate
+2,160 B USB TX queue belongs to the application.
+
+Per-instance RAM is configurable: `YORULINK_MAX_PAYLOAD` and
+`YORULINK_RX_QUEUE_SIZE` directly affect handle size. The measured 64 / 128
+and 256 / 512 profiles used 384 B and 1,152 B respectively. No dynamic
+allocation is used.
 
 ## Build and Test
 
@@ -521,6 +595,9 @@ CRC covers `VER` through the end of PAYLOAD. The normative request vector is:
 ```text
 AA 55 01 01 2A 10 02 02 00 05 FF 50 7B
 ```
+
+Wire Protocol V1 is treated as frozen for the v0.1.x line. Adding application
+CMD/OP values does not change the wire version.
 
 ## Scope
 

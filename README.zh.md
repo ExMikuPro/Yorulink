@@ -39,6 +39,66 @@ Yorulink 是一个面向 MCU ↔ MCU 字节流通信的轻量、硬件无关二�
 - 可直接接入项目统一错误码体系
 - Host 测试、ASan/UBSan 和 Parser fuzz target
 
+## 🌙 平台支持
+
+下表记录的是 Yorulink 的实际构建和硬件验证状态，并不是能够运行 Yorulink 的 MCU
+白名单。未列出的平台并不代表无法使用；只要能够实现对应的 Transport / Port
+Contract，原则上即可移植，Core 不维护器件白名单。设计面向现代工具链，硬件差异
+留在可跨架构移植的 Core 之外。
+
+| 状态 | 含义 |
+|---|---|
+| 🌱 Planned | 已计划验证 |
+| 🧩 Porting | 正在移植或验证 |
+| 🔧 Build Verified | 已交叉编译并链接；不代表实机运行 |
+| 🧪 Hardware Validated | 已在真实硬件完成基本功能验证 |
+| 🔥 Stress Validated | 已通过实机压力验证 |
+| 🌟 Reference Target | 主要基准或回归目标 |
+
+### 已验证目标
+
+| 平台 | 厂商 | 架构 | Transport | 配置（Payload / RX Queue） | 状态 |
+|---|---|---|---|---|---|
+| STM32H743XIH6 | ST | Cortex-M7 | USB CDC | 256 B / 512 B | 🔥 Stress Validated |
+| STM32G031G8U6 | ST | Cortex-M0+ | USART1 / CH340N | 64 B / 128 B | 🌟 Reference Target · 🔥 Stress Validated |
+| PY32F002AF15P6TU | Puya | Cortex-M0+ | USART1 / CH340N | 64 B / 128 B | 🔥 Stress Validated |
+| MSPM0G3507 | Texas Instruments | Cortex-M0+ | UART0 / XDS110 Backchannel UART | 64 B / 128 B | 🔥 Stress Validated |
+
+### 🌱 计划验证目标
+
+| 平台 | 架构 | 计划验证内容 |
+|---|---|---|
+| STM32F070 | Cortex-M0 | 小资源 STM32 目标 |
+| STM32F072 | Cortex-M0 | Cortex-M0 / USB-UART 验证 |
+| STM32F407 | Cortex-M4F | DMA / 性能验证 |
+| STC89C52RC | 8051 | 使用合适现代工具链的旧架构计划验证 |
+| IA-16 / 8086 | x86-16 | 旧架构可移植性计划验证 |
+
+Yorulink 面向现代嵌入式 C 工具链。较老 CPU 架构可以作为移植目标，但不会为了
+兼容旧式专有编译器方言而牺牲现代 MCU 上的易用性、性能或代码质量。
+
+### 实机验证摘要
+
+| 目标 | 内核 / 时钟 | 配置 | Handle | Transport | Clean stress |
+|---|---|---|---:|---|---:|
+| STM32H743XIH6 | Cortex-M7 / 64 MHz | 256 / 512 | 1,152 B | USB CDC | 100k PASS |
+| STM32G031G8U6 | Cortex-M0+ / 64 MHz | 64 / 128 | 384 B | 115200 UART | 100k PASS |
+| PY32F002AF15P6TU | Cortex-M0+ / 24 MHz | 64 / 128 | 384 B | 115200 UART | 100k PASS |
+| MSPM0G3507 | Cortex-M0+ / 32 MHz | 64 / 128 | 384 B | 115200 UART | 100k PASS |
+
+表中的 `100k PASS` 表示该平台已完成 100,000 次真实硬件事务，并在对应 clean
+stress 阶段未出现意外协议错误。各平台的功能、Parser 恢复和复位后检查也通过。
+同一套 Wire Protocol V1 已在 ST、Puya 和 Texas Instruments 目标上完成实机
+验证；各测试工程均未修改其所用 Yorulink Core。H743 验证使用的头文件修订与
+其他三个目标不同。
+
+### 验证原则
+
+构建验证确认目标工具链可编译链接；实机验证确认开发板上的功能；压力验证记录
+在指定 Transport 和配置下完成的一次测试。这些结果不代表其他器件或运行条件
+已获验证。观察到的事务速率还受 Transport、波特率、Host 调度、时钟和 SDK
+影响，是集成测试结果，不是可跨平台比较的 Core 性能基准。
+
 ## 快速开始
 
 移植 Yorulink **不需要修改 `yorulink.h`**。新平台只需提供一个 TX 发送回调，
@@ -77,6 +137,9 @@ TX：Handler / Request / Event → Yorulink → Write 回调 → Transport
 
 Transport 只负责搬运字节，不必理解 Yorulink 帧；Yorulink 也不区分这些字节来自
 UART、USB、SPI 还是 TCP。
+Core 负责协议、Parser、CRC、事务和 Reader/Writer；应用 / Port 负责 UART、
+USB、SPI 或 TCP 接入、Tick 来源、DMA Buffer 生命周期及平台 SDK 调用。
+新平台适配原则上应在应用 / Port 层完成，而不是向 Core 中不断加入厂商 `#ifdef`。
 下方代码块是应用源文件的片段；可执行语句应分别放进初始化函数、回调或主循环。
 
 ### 1. 复制一个头文件，只定义一次实现
@@ -458,20 +521,25 @@ Write 回调中的完整帧指针在回调返回后即失效。
 
 ## 资源占用
 
-一份实测 STM32H743 Cortex-M7 Release（`-Os`）构建，在
-`YORULINK_MAX_PAYLOAD=256`、`YORULINK_RX_QUEUE_SIZE=512` 时，链接的
-Yorulink 协议核心代码约 **2.2 KiB**，一个 `YORULINK_HandleTypeDef` 占
-**1,152 B RAM**。这不是固定上限；编译器、优化等级、配置和实际被链接的
-API 都会影响结果。该测试工程额外的 USB CDC TX 队列为 2,160 B，**不属于**
-Yorulink Core。Core 不使用动态内存。
+以下为验证应用的 Release 实测值：
 
-## 已验证硬件
+| 目标 | 配置 | `sizeof(YORULINK_HandleTypeDef)` | 约链接 Core text | 完整验证应用 Flash 增量 | 完整应用 RAM 增量 |
+|---|---|---:|---:|---:|---:|
+| STM32H743XIH6 | 256 / 512 | 1,152 B | 报告未测量 | 未测量 | 未测量 |
+| STM32G031G8U6 | 64 / 128 | 384 B | ~2,102 B | 2,952 B | 464 B |
+| PY32F002AF15P6TU | 64 / 128 | 384 B | ~2,014 B | 2,884 B | 320 B |
+| MSPM0G3507 | 64 / 128 | 384 B | ~4,164 B | 6,872 B | 320 B |
 
-已在 **STM32H743 / Cortex-M7** 上通过 USB CDC 实机验证：10 万次
-Request/Response 压力测试完成，意外 ERROR 帧、超时、Host CRC 错误与
-Payload 不匹配均为 0。复位、USB 重新枚举及之后的 PING/ECHO 也通过；
-后续 RGB GPIO 命令颜色循环在开发板上得到目视确认。这是具体实测记录，
-不是“所有 STM32 或所有 Transport 均已实测”的承诺。
+Core text 为基于最终链接符号的估算值。不同目标的编译参数、LTO、section GC、
+SDK 集成方式及符号归属可能不同，因此不应直接把这些数字当作跨平台性能或代码
+膨胀比较。“完整验证应用增量”包含测试命令、回调和集成代码，不等同于 Yorulink
+Core 本身大小。H743 报告给出了最终 Release 应用 Flash（`text+data`）22,500 B
+和静态 RAM（`data+bss`）12,312 B，但没有可比的基线增量；另外的 2,160 B USB
+TX 队列属于应用层。
+
+每实例 RAM 占用可配置：`YORULINK_MAX_PAYLOAD` 和 `YORULINK_RX_QUEUE_SIZE`
+直接影响 Handle 大小。实测 64 / 128 与 256 / 512 配置分别占 384 B 和 1,152 B。
+Core 不使用动态内存。
 
 ## 构建与测试
 
@@ -495,6 +563,9 @@ CRC 覆盖 `VER` 到 Payload 末尾。规范 Request Vector：
 ```text
 AA 55 01 01 2A 10 02 02 00 05 FF 50 7B
 ```
+
+在 v0.1.x 系列中，Wire Protocol V1 视为冻结；新增应用 CMD/OP 不需要修改
+Wire Version。
 
 ## V0.1 不包含
 

@@ -121,6 +121,12 @@ copy yorulink.h → define IMPLEMENTATION once → Init → SetWrite
 
 ## Porting Guide
 
+### Optional Port Template
+
+If you prefer a copy-and-edit integration layer, see [`port/`](port/).
+The template keeps platform-specific TX and Tick code outside the Core.
+`yorulink.h` does not depend on it.
+
 ### The actual porting API
 
 | Where | What to do | Yorulink API | Required? |
